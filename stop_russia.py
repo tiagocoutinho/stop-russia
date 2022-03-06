@@ -1,12 +1,26 @@
-import asyncio
+import time
 import random
+import asyncio
 
-import aiohttp
+from aiohttp import ClientSession
 from async_timeout import timeout
+from rich.live import Live
+from rich.table import Table
 
 
 def Target(url, pattern=None):
-    return dict(url=url, pattern=pattern or url, nb_requests=0, nb_errors=0, message="", last="", total=0)
+    return dict(
+        url=url,
+        base_url=url.removeprefix("http://").removeprefix("https://"),
+        pattern=pattern or url,
+        nb_requests=0,
+        nb_errors=0,
+        message="",
+        last_url="",
+        total=0,
+        time=0,
+    )
+
 
 targets = [
     # https://lenta.ru/news/2022/02/28/obletim/
@@ -43,6 +57,36 @@ targets = [
     Target('https://life.ru/'),
 ]
 
+def format_data_size(size, decimals=2, binary_system=False):
+    if binary_system:
+        units = ["B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB", "ZiB"]
+        largest_unit = "YiB"
+        step = 1024
+    else:
+        units = ["B", "kB", "MB", "GB", "TB", "PB", "EB", "ZB"]
+        largest_unit = "YB"
+        step = 1000
+    for unit in units:
+        if size < step:
+            break
+        size /= step
+    else:
+        unit = largest_unit
+    return f"{{:.{decimals}f}} {unit}".format(size)
+
+
+def format_time(microsecs, decimals=2):
+    units = [("µs", 1000), ("ms", 1000), ("s", 60), ("m", 0)]
+    t = microsecs
+    for unit, step in units:
+        if t < step:
+            break
+        t /= step
+    else:
+        unit = "h"
+    return f"{{:.{decimals}f}} {unit}".format(t)
+
+
 def gen_url(target):
     return target['pattern'].format(
         year = random.randint(2010, 2022),
@@ -54,7 +98,8 @@ def gen_url(target):
 
 
 async def get(session, target, max_time=None):
-    target['last'] = url = gen_url(target)
+    start = time.monotonic()
+    target['last_url'] = url = gen_url(target)
     try:
         async with timeout(max_time) as timer:
             async with session.get(url) as response:
@@ -68,8 +113,22 @@ async def get(session, target, max_time=None):
         target['message'] = f"error: {error!r}"
     finally:
         target['nb_requests'] += 1
-        print(target['url'], target['message'])
+        target['time'] = time.monotonic() -start
+    return target['time']
 
+
+async def get_loop(target, max_time=None, max_freq=2):
+    period = 1 / max_freq
+    async with ClientSession() as session:
+        while True:
+            dt = await get(session, target, max_time)
+            if (nap := period - dt) > 0:
+                await asyncio.sleep(nap)
+
+
+async def get_loop_all(max_time=None):
+    tasks = [asyncio.create_task(get_loop(target, max_time)) for target in targets]
+    await asyncio.wait(tasks)
 
 
 async def get_all(session, max_time=None):
@@ -77,14 +136,44 @@ async def get_all(session, max_time=None):
     await asyncio.wait(tasks)
 
 
-async def main():
-
+async def get_session(max_time=None):
     async with aiohttp.ClientSession() as session:
         while True:
             print(40*"=")
-            await get_all(session, 2)
-        print(targets[0])
+            await get_all(session, max_time)
 
 
-asyncio.run(main())
+def table():
+    table = Table("URL", "Reqs", "Errors", "Size", "Time", "Last", title="stats", min_width=120)
+    for target in targets:
+        style = "red" if ":-(" in target['message'] else None
+        table.add_row(
+            target['base_url'],
+            str(target['nb_requests']),
+            str(target['nb_errors']),
+            format_data_size(target['total']),
+            format_time(target['time']*1E6),
+            target['message'][:40], style=style
+        )
+    return table
+
+
+async def monitor():
+    with Live(table(), auto_refresh=False) as live:
+        while True:
+            await asyncio.sleep(0.5)
+            live.update(table(), refresh=True)
+
+
+async def main():
+    fetcher = asyncio.create_task(get_loop_all(2))
+
+    try:
+        await monitor()
+    except KeyboardInterrupt:
+        print("Ctrl-C pressed. Bailing out")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
 
