@@ -131,18 +131,6 @@ async def get_loop_all(max_time=None):
     await asyncio.wait(tasks)
 
 
-async def get_all(session, max_time=None):
-    tasks = [asyncio.create_task(get(session, target, max_time)) for target in targets]
-    await asyncio.wait(tasks)
-
-
-async def get_session(max_time=None):
-    async with aiohttp.ClientSession() as session:
-        while True:
-            print(40*"=")
-            await get_all(session, max_time)
-
-
 def table():
     table = Table("URL", "Reqs", "Errors", "Size", "Time", "Last", title="stats", min_width=120)
     for target in targets:
