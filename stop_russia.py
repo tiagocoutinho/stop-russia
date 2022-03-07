@@ -2,8 +2,7 @@ import time
 import random
 import asyncio
 
-from aiohttp import ClientSession
-from async_timeout import timeout
+from aiohttp import ClientSession, ClientTimeout
 from rich.live import Live
 from rich.table import Table
 
@@ -97,37 +96,35 @@ def gen_url(target):
     )
 
 
-async def get(session, target, max_time=None):
+async def get(session, target):
     start = time.monotonic()
     target['last_url'] = url = gen_url(target)
     try:
-        async with timeout(max_time) as timer:
-            async with session.get(url) as response:
-                if response.ok:
-                    target['message'] = f"It was ok :-("
-                else:
-                    target['nb_errors'] += 1
-                    target['message'] = f"http error: {response.status}"
-                target['total'] += len(await response.text())
+        async with session.get(url) as response:
+            if response.ok:
+                target['message'] = f"It was ok :-("
+            else:
+                target['nb_errors'] += 1
+                target['message'] = f"http error: {response.status}"
+            target['total'] += len(await response.text())
     except Exception as error:
         target['message'] = f"error: {error!r}"
     finally:
         target['nb_requests'] += 1
-        target['time'] = time.monotonic() -start
+        target['time'] = time.monotonic() - start
     return target['time']
 
 
-async def get_loop(target, max_time=None, max_freq=2):
+async def get_loop(session, target, max_freq=2):
     period = 1 / max_freq
-    async with ClientSession() as session:
-        while True:
-            dt = await get(session, target, max_time)
-            if (nap := period - dt) > 0:
-                await asyncio.sleep(nap)
+    while True:
+        dt = await get(session, target)
+        if (nap := period - dt) > 0:
+            await asyncio.sleep(nap)
 
 
-async def get_loop_all(max_time=None):
-    tasks = [asyncio.create_task(get_loop(target, max_time)) for target in targets]
+async def get_loop_all(session):
+    tasks = [asyncio.create_task(get_loop(session, target)) for target in targets]
     await asyncio.wait(tasks)
 
 
@@ -154,12 +151,15 @@ async def monitor():
 
 
 async def main():
-    fetcher = asyncio.create_task(get_loop_all(2))
-
-    try:
-        await monitor()
-    except KeyboardInterrupt:
-        print("Ctrl-C pressed. Bailing out")
+    timeout = ClientTimeout(total=2)
+    async with ClientSession(timeout=timeout) as session:
+        fetcher = asyncio.create_task(get_loop_all(session))
+        try:
+            await monitor()
+        except KeyboardInterrupt:
+            print("Ctrl-C pressed. Bailing out")
+        finally:
+            await session.close()
 
 
 if __name__ == "__main__":
